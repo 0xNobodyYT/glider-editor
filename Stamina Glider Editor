@@ -1,0 +1,213 @@
+@echo off
+setlocal
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "DEFAULT_GAME_DIR=E:\Program Files\Steam\steamapps\common\Crimson Desert"
+if exist "%SCRIPT_DIR%\0008\0.paz" set "DEFAULT_GAME_DIR=%SCRIPT_DIR%"
+set "MODE=%~1"
+set "NORMAL=%~2"
+set "FAST=%~3"
+set "GAME_DIR=%~4"
+if /I "%~1"=="/?" goto :usage
+if /I "%~1"=="-h" goto :usage
+if /I "%~1"=="--help" goto :usage
+if /I "%MODE%"=="patch" goto :cli_patch
+if defined MODE (
+  set "NORMAL=%~1"
+  set "FAST=%~2"
+  set "GAME_DIR=%~3"
+  if defined NORMAL goto :legacy_patch
+)
+goto :interactive
+:interactive
+cls
+echo Crimson Desert Glide Patcher
+echo.
+echo What this tool can do:
+echo   1. Patch glide stamina values with your custom numbers.
+echo   2. Exit
+echo.
+echo Default in-game glide values:
+echo   Normal glide = 25
+echo   Fast glide   = 50
+echo.
+echo Folder instructions:
+echo   Enter your Crimson Desert game folder path.
+echo   If this BAT is already inside the game's folder, just press Enter.
+echo   Current default folder: %DEFAULT_GAME_DIR%
+echo.
+:prompt_game_dir
+set "GAME_DIR="
+set /p "GAME_DIR=Game folder path [%DEFAULT_GAME_DIR%]: "
+if not defined GAME_DIR set "GAME_DIR=%DEFAULT_GAME_DIR%"
+call :normalize_game_dir
+if not exist "%GAME_DIR%\0008\0.paz" (
+  echo.
+  echo Could not find "%GAME_DIR%\0008\0.paz"
+  echo Make sure the path points to your Crimson Desert folder.
+  echo.
+  goto :prompt_game_dir
+)
+:prompt_action
+echo.
+echo Select an action:
+echo   1. Patcher
+echo   2. Exit
+set "ACTION="
+set /p "ACTION=Enter 1 or 2: "
+if "%ACTION%"=="1" goto :interactive_patch
+if "%ACTION%"=="2" goto :finish
+echo.
+echo Invalid selection.
+goto :prompt_action
+:interactive_patch
+echo.
+echo Enter your custom glide stamina values.
+echo Default normal glide is 25.
+echo Default fast glide is 50.
+echo Example mod values: 2 and 5
+echo Exact 0 is not supported by this patcher.
+echo.
+set "NORMAL="
+set "FAST="
+set /p "NORMAL=Normal glide cost [25]: "
+set /p "FAST=Fast glide cost [50]: "
+if not defined NORMAL set "NORMAL=25"
+if not defined FAST set "FAST=50"
+set "MODE=patch"
+goto :run
+:cli_patch
+if not defined NORMAL (
+  echo Missing normal glide cost.
+  goto :usage_error
+)
+if not defined FAST (
+  echo Missing fast glide cost.
+  goto :usage_error
+)
+if not defined GAME_DIR set "GAME_DIR=%DEFAULT_GAME_DIR%"
+call :normalize_game_dir
+if not exist "%GAME_DIR%\0008\0.paz" (
+  echo.
+  echo Could not find "%GAME_DIR%\0008\0.paz"
+  echo Make sure the path points to your Crimson Desert folder.
+  goto :finish
+)
+goto :run
+:legacy_patch
+if not defined FAST (
+  echo Missing fast glide cost.
+  goto :usage_error
+)
+if not defined GAME_DIR set "GAME_DIR=%DEFAULT_GAME_DIR%"
+set "MODE=patch"
+call :normalize_game_dir
+if not exist "%GAME_DIR%\0008\0.paz" (
+  echo.
+  echo Could not find "%GAME_DIR%\0008\0.paz"
+  echo Make sure the path points to your Crimson Desert folder.
+  goto :finish
+)
+goto :run
+:normalize_game_dir
+set "GAME_DIR=%GAME_DIR:"=%"
+if "%GAME_DIR:~-1%"=="\" set "GAME_DIR=%GAME_DIR:~0,-1%"
+exit /b 0
+:run
+set "CD_GLIDE_MODE=%MODE%"
+set "CD_GLIDE_GAME_DIR=%GAME_DIR%"
+set "CD_GLIDE_NORMAL=%NORMAL%"
+set "CD_GLIDE_FAST=%FAST%"
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference = 'Stop'; try {" ^
+  "$mode = $env:CD_GLIDE_MODE;" ^
+  "$gameDir = $env:CD_GLIDE_GAME_DIR;" ^
+  "$normalText = $env:CD_GLIDE_NORMAL;" ^
+  "$fastText = $env:CD_GLIDE_FAST;" ^
+  "$baseOffset = 0x00CCDF9E;" ^
+  "$fastOffset = 0x00CCBD2B;" ^
+  "$basePrefix = [byte[]](0x00,0x2b,0x2c,0x05,0x50,0xe4,0x12,0x22);" ^
+  "$baseSuffix = [byte[]](0x25,0x0d,0x0f,0xe4,0x12,0x13);" ^
+  "$fastPrefix = [byte[]](0x02,0x00,0x2c,0x1d,0xf5,0x0a,0x1d,0x21);" ^
+  "$fastSuffix = [byte[]](0x6c,0x4d,0x0f,0x50,0xc8,0x14);" ^
+  "$defaultBase = [byte[]](0x58,0x9E);" ^
+  "$defaultFast = [byte[]](0xB0,0x3C);" ^
+  "$culture = [System.Globalization.CultureInfo]::InvariantCulture;" ^
+  "function Parse-Cost([string]$text,[string]$label) { " ^
+  "  try { $value = [decimal]::Parse($text, $culture) } catch { throw \"$label is not a valid number: '$text'\" };" ^
+  "  if ($value -le 0) { throw \"$label must be greater than 0. Exact 0 is not supported by this patcher.\" };" ^
+  "  $scaled = [int][decimal]::Round(($value * 1000), 0, [System.MidpointRounding]::AwayFromZero);" ^
+  "  if ($scaled -le 0 -or $scaled -gt 65535) { throw \"$label must be between 0.001 and 65.535 inclusive. Got $value.\" };" ^
+  "  return [pscustomobject]@{ Value = $value; Scaled = $scaled };" ^
+  "};" ^
+  "function Get-Low16Bytes([int]$scaled) { " ^
+  "  $raw = (-$scaled) -band 0xFFFF;" ^
+  "  return [byte[]]@([byte]($raw -band 0xFF), [byte](($raw -shr 8) -band 0xFF));" ^
+  "};" ^
+  "function Assert-Context([byte[]]$blob,[int]$offset,[byte[]]$prefix,[byte[]]$suffix,[string]$label) { " ^
+  "  if ($offset -lt $prefix.Length -or ($offset + 2 + $suffix.Length) -gt $blob.Length) { throw \"$label patch offset is out of bounds for this archive.\" };" ^
+  "  for ($i = 0; $i -lt $prefix.Length; $i++) { if ($blob[$offset - $prefix.Length + $i] -ne $prefix[$i]) { throw \"$label guard bytes do not match this game build.\" } };" ^
+  "  for ($i = 0; $i -lt $suffix.Length; $i++) { if ($blob[$offset + 2 + $i] -ne $suffix[$i]) { throw \"$label guard bytes do not match this game build.\" } };" ^
+  "};" ^
+  "function Write-Bytes([string]$path,[int]$offset,[byte[]]$bytes) { " ^
+  "  $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read);" ^
+  "  try { $stream.Seek($offset, [System.IO.SeekOrigin]::Begin) | Out-Null; $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() };" ^
+  "};" ^
+  "function Read-Bytes([string]$path,[int]$offset,[int]$count) { " ^
+  "  $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite);" ^
+  "  try { " ^
+  "    $buffer = New-Object byte[] $count;" ^
+  "    $stream.Seek($offset, [System.IO.SeekOrigin]::Begin) | Out-Null;" ^
+  "    $read = $stream.Read($buffer, 0, $count);" ^
+  "    if ($read -ne $count) { throw 'Could not read verification bytes from the archive.' };" ^
+  "    return $buffer" ^
+  "  } finally { $stream.Dispose() };" ^
+  "};" ^
+  "$pazPath = Join-Path $gameDir '0008\0.paz';" ^
+  "if (-not (Test-Path -LiteralPath $pazPath)) { throw \"Archive not found: $pazPath\" };" ^
+  "$blob = [System.IO.File]::ReadAllBytes($pazPath);" ^
+  "Assert-Context $blob $baseOffset $basePrefix $baseSuffix 'Normal glide';" ^
+  "Assert-Context $blob $fastOffset $fastPrefix $fastSuffix 'Fast glide';" ^
+  "$backupPath = Join-Path (Split-Path -Parent $pazPath) '0.paz.glide_patcher_backup';" ^
+  "if ($mode -eq 'patch') { " ^
+  "  $normal = Parse-Cost $normalText 'Normal glide cost';" ^
+  "  $fast = Parse-Cost $fastText 'Fast glide cost';" ^
+  "  if (-not (Test-Path -LiteralPath $backupPath)) { Copy-Item -LiteralPath $pazPath -Destination $backupPath; Write-Host ('Backup created: ' + $backupPath) } else { Write-Host ('Backup exists:  ' + $backupPath) };" ^
+  "  $normalBytes = Get-Low16Bytes $normal.Scaled;" ^
+  "  $fastBytes = Get-Low16Bytes $fast.Scaled;" ^
+  "  Write-Bytes $pazPath $baseOffset $normalBytes;" ^
+  "  Write-Bytes $pazPath $fastOffset $fastBytes;" ^
+  "  Write-Host ('Patched:      ' + $pazPath);" ^
+  "  Write-Host ('Normal glide: ' + $normal.Value + ' -> ' + ([System.BitConverter]::ToString($normalBytes).Replace('-', ' ')));" ^
+  "  Write-Host ('Fast glide:   ' + $fast.Value + ' -> ' + ([System.BitConverter]::ToString($fastBytes).Replace('-', ' ')));" ^
+  "  Write-Host 'Scope: shared glide/flight roots for Damian, CrowWing, and RocketPack.';" ^
+  "} else { throw ('Unknown mode: ' + $mode + '. This patcher only supports patch mode.') };" ^
+  "$currentBase = Read-Bytes $pazPath $baseOffset 2;" ^
+  "$currentFast = Read-Bytes $pazPath $fastOffset 2;" ^
+  "Write-Host ('Bytes now:     normal=' + ([System.BitConverter]::ToString($currentBase).Replace('-', ' ')) + ' fast=' + ([System.BitConverter]::ToString($currentFast).Replace('-', ' ')));" ^
+  "} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
+if errorlevel 1 (
+  echo.
+  echo Operation failed.
+) else (
+  echo.
+  echo Patch complete.
+)
+goto :finish
+:usage_error
+echo.
+:usage
+echo Usage:
+echo   %~nx0
+echo   %~nx0 patch 2 5 "E:\Program Files\Steam\steamapps\common\Crimson Desert"
+echo.
+echo Legacy shortcut:
+echo   %~nx0 2 5 "E:\Program Files\Steam\steamapps\common\Crimson Desert"
+:finish
+set "FINAL_EXIT_CODE=%ERRORLEVEL%"
+echo.
+echo The script is finished.
+set "PRESS_ENTER="
+set /p "PRESS_ENTER=Press Enter to close this window..."
+exit /b %FINAL_EXIT_CODE%
